@@ -1,0 +1,54 @@
+require("dotenv").config();
+const express = require("express");
+const mongoose = require("mongoose");
+const Redis = require("ioredis");
+const cors = require("cors");
+const helmet = require("helmet");
+const errorHandler = require("./middleware/errorHandler");
+const logger = require("./utils/logger");
+const { connectToRabbitMQ, consumeEvent } = require("./utils/rabbitmq");
+const searchRoutes = require("./routes/search-routes.js");
+const { handlePostCreated } = require("./eventHandler/searchEventHandler.js");
+
+const app = express();
+const PORT = process.env.PORT;
+
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(() => logger.info("connected to mongodb"))
+  .catch((e) => logger.error("mongo connection error", e));
+
+const redisClient = new Redis(process.env.REDIS_URL);
+
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
+
+app.use((req, res, next) => {
+  logger.info(`Received ${req.method} request to ${req.url}`);
+  logger.info(`Request body, ${req.body}`);
+  next();
+});
+
+// Prefix all search routes; leading slash ensures Express matches correctly
+app.use("/api/search", searchRoutes);
+
+app.use(errorHandler);
+
+async function startServer() {
+  try {
+    await connectToRabbitMQ();
+
+    await consumeEvent("post.created", handlePostCreated);
+    await consumeEvent("post.deleted", handlePostCreated);
+
+    app.listen(PORT, () => {
+      logger.info(`Search service is running on port:${PORT}`);
+    });
+  } catch (error) {
+    logger.error(error, "Failed to start service");
+    process.exit(1);
+  }
+}
+
+startServer();
